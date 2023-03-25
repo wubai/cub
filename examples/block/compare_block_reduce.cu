@@ -116,7 +116,7 @@ template <
   int                     BLOCK_THREADS,
   int                     ITEMS_PER_THREAD,
   TestBlockReduceAlgorithm    ALGORITHM>
-__global__ void SimpleBlockReduceKernel(
+__global__ void BlockReduceKernel(
   int         *d_in,          // Tile of input
   int         *d_out,         // Tile aggregate
   clock_t     *d_elapsed)     // Elapsed cycle count of block reduction
@@ -206,21 +206,26 @@ void Test()
  if (TEST_ALGORITHM == EMPTY) {
    CubDebugExit(MaxSmOccupancy(max_sm_occupancy, BlockReduceKernel<BLOCK_THREADS, ITEMS_PER_THREAD, ALGORITHM>, BLOCK_THREADS));
  } else {
-   CubDebugExit(MaxSmOccupancy(max_sm_occupancy, SimpleBlockReduceKernel<BLOCK_THREADS, ITEMS_PER_THREAD, TEST_ALGORITHM>, BLOCK_THREADS));
+   CubDebugExit(MaxSmOccupancy(max_sm_occupancy, BlockReduceKernel<BLOCK_THREADS, ITEMS_PER_THREAD, TEST_ALGORITHM>, BLOCK_THREADS));
  }
  // Copy problem to device
  cudaMemcpy(d_in, h_in, sizeof(int) * TILE_SIZE, cudaMemcpyHostToDevice);
-
- printf("BlockReduce algorithm %s on %d items (%d timing iterations, %d blocks, %d threads, %d items per thread, %d SM occupancy):\n",
-        (ALGORITHM == BLOCK_REDUCE_RAKING) ? "BLOCK_REDUCE_RAKING" : "BLOCK_REDUCE_WARP_REDUCTIONS",
-        TILE_SIZE, g_timing_iterations, g_grid_size, BLOCK_THREADS, ITEMS_PER_THREAD, max_sm_occupancy);
+ if (TEST_ALGORITHM == EMPTY) {
+   printf("BlockReduce algorithm %s on %d items (%d timing iterations, %d blocks, %d threads, %d items per thread, %d SM occupancy):\n",
+          (ALGORITHM == BLOCK_REDUCE_RAKING) ? "BLOCK_REDUCE_RAKING" : "BLOCK_REDUCE_WARP_REDUCTIONS",
+          TILE_SIZE, g_timing_iterations, g_grid_size, BLOCK_THREADS, ITEMS_PER_THREAD, max_sm_occupancy);
+ } else {
+   printf("BlockReduce algorithm %s on %d items (%d timing iterations, %d blocks, %d threads, %d items per thread, %d SM occupancy):\n",
+          (TEST_ALGORITHM == SIMPLE) ? "BLOCK_REDUCE_SIMPLE" : "BLOCK_REDUCE_NONE",
+          TILE_SIZE, g_timing_iterations, g_grid_size, BLOCK_THREADS, ITEMS_PER_THREAD, max_sm_occupancy);
+ }
  // Run kernel
  if (TEST_ALGORITHM == EMPTY)
  {
    BlockReduceKernel<BLOCK_THREADS, ITEMS_PER_THREAD, ALGORITHM>
      <<<g_grid_size, BLOCK_THREADS>>>(d_in, d_out, d_elapsed);
  } else {
-   SimpleBlockReduceKernel<BLOCK_THREADS, ITEMS_PER_THREAD, SIMPLE>
+   BlockReduceKernel<BLOCK_THREADS, ITEMS_PER_THREAD, SIMPLE>
      <<<g_grid_size, BLOCK_THREADS>>>(d_in, d_out, d_elapsed);
  }
 
@@ -249,7 +254,7 @@ void Test()
        d_out,
        d_elapsed);
    } else {
-     SimpleBlockReduceKernel<BLOCK_THREADS, ITEMS_PER_THREAD, SIMPLE><<<g_grid_size, BLOCK_THREADS>>>(
+     BlockReduceKernel<BLOCK_THREADS, ITEMS_PER_THREAD, SIMPLE><<<g_grid_size, BLOCK_THREADS>>>(
        d_in,
        d_out,
        d_elapsed);
