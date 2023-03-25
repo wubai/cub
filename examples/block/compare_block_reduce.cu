@@ -52,7 +52,8 @@ enum TestBlockReduceAlgorithm
 {
   EMPTY,
   SIMPLE,
-  MIN_DIVERGENCE
+  MIN_DIVERGENCE,
+  SHARED_MEM
 };
 //---------------------------------------------------------------------
 // Globals, constants and typedefs
@@ -136,6 +137,25 @@ struct BlockReduceMinDivergence {
   }
 };
 
+#define BLOCK_DIM 512
+struct BlockReduceSharedMem {
+  __device__ __forceinline__ int Sum(int *d_in){
+    __shared__ int s_in[BLOCK_DIM];
+    unsigned int t = threadIdx.x ;
+    unsigned int stride = blockDim.x/2;
+    if (t < stride) {
+      s_in[t] = d_in[t] + d_in[t + stride];
+      for (stride = stride/2; stride > 0; stride /= 2) {
+        __syncthreads();
+        if (t < stride) {
+          s_in[t] += s_in[t + stride];
+        }
+      }
+    }
+    return s_in[0];
+  }
+};
+
 template <
   int                         BLOCK_THREADS,
   int                         ITEMS_PER_THREAD,
@@ -148,7 +168,9 @@ __global__ void BlockReduceKernel(
 
   using InternalTestBlockReduce = cub::detail::conditional_t< ALGORITHM == SIMPLE,
                                                               BlockReduceSimple,
-                                                              BlockReduceMinDivergence>;
+                                  cub::detail::conditional_t< ALGORITHM == MIN_DIVERGENCE,
+                                                              BlockReduceMinDivergence,
+                                                              BlockReduceSharedMem>>;
   // Start cycle timer
   clock_t start = clock();
 
@@ -241,7 +263,8 @@ void Test()
           TILE_SIZE, g_timing_iterations, g_grid_size, BLOCK_THREADS, ITEMS_PER_THREAD, max_sm_occupancy);
  } else {
    printf("BlockReduce algorithm %s on %d items (%d timing iterations, %d blocks, %d threads, %d items per thread, %d SM occupancy):\n",
-          (TEST_ALGORITHM == SIMPLE) ? "BLOCK_REDUCE_SIMPLE" : "BLOCK_REDUCE_MIN_DIVERGENCE",
+          (TEST_ALGORITHM == SIMPLE) ? "BLOCK_REDUCE_SIMPLE" :
+          (TEST_ALGORITHM == MIN_DIVERGENCE) ? "BLOCK_REDUCE_MIN_DIVERGENCE": "BLOCK_REDUCE_SHARED_MEM",
           TILE_SIZE, g_timing_iterations, g_grid_size, BLOCK_THREADS, ITEMS_PER_THREAD, max_sm_occupancy);
  }
  // Run kernel
@@ -352,6 +375,8 @@ int main(int argc, char** argv)
 
  Test<1024, 1, BLOCK_REDUCE_RAKING, SIMPLE>();
  Test<1024, 1, BLOCK_REDUCE_RAKING, MIN_DIVERGENCE>();
+ Test<1024, 1, BLOCK_REDUCE_RAKING, SHARED_MEM>();
+
 // Test<256, 4, BLOCK_REDUCE_RAKING>();
 // Test<128, 8, BLOCK_REDUCE_RAKING>();
 // Test<64, 16, BLOCK_REDUCE_RAKING>();
