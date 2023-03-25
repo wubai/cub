@@ -51,7 +51,8 @@ using namespace cub;
 enum TestBlockReduceAlgorithm
 {
   EMPTY,
-  SIMPLE
+  SIMPLE,
+  MIN_DIVERGENCE
 };
 //---------------------------------------------------------------------
 // Globals, constants and typedefs
@@ -111,24 +112,48 @@ __global__ void BlockReduceKernel(
  }
 }
 
+struct BlockReduceSimple {
+  __device__ __forceinline__ int Sum(int *d_in){
+    for (int stride = 1; stride < blockDim.x; stride *= 2) {
+      if (threadIdx.x % stride == 0) {
+        d_in[threadIdx.x * 2] += d_in[threadIdx.x*2 + stride];
+      }
+      __syncthreads();
+    }
+    return d_in[0];
+  }
+};
+
+struct BlockReduceMinDivergence {
+  __device__ __forceinline__ int Sum(int *d_in){
+    for (int stride = blockDim.x/2; stride > 0; stride /= 2) {
+      if (threadIdx.x < stride) {
+        d_in[threadIdx.x] += d_in[threadIdx.x + stride];
+      }
+      __syncthreads();
+    }
+    return d_in[0];
+  }
+};
 
 template <
-  int                     BLOCK_THREADS,
-  int                     ITEMS_PER_THREAD,
+  int                         BLOCK_THREADS,
+  int                         ITEMS_PER_THREAD,
   TestBlockReduceAlgorithm    ALGORITHM>
 __global__ void BlockReduceKernel(
   int         *d_in,          // Tile of input
   int         *d_out,         // Tile aggregate
   clock_t     *d_elapsed)     // Elapsed cycle count of block reduction
 {
+
+  using InternalTestBlockReduce = cub::detail::conditional_t< ALGORITHM == SIMPLE,
+                                                              BlockReduceSimple,
+                                                              BlockReduceMinDivergence>;
   // Start cycle timer
   clock_t start = clock();
-  for (int stride = 1; stride < blockDim.x; stride *= 2) {
-    if (threadIdx.x % stride == 0) {
-      d_in[threadIdx.x * 2] += d_in[threadIdx.x*2 + stride];
-    }
-    __syncthreads();
-  }
+
+  // Compute sum
+  int aggregate = InternalTestBlockReduce().Sum(d_in);
 
   // Stop cycle timer
   clock_t stop = clock();
@@ -137,7 +162,7 @@ __global__ void BlockReduceKernel(
   if (threadIdx.x == 0)
   {
     *d_elapsed = (start > stop) ? start - stop : stop - start;
-    *d_out = d_in[0];
+    *d_out = aggregate;
   }
 }
 
@@ -216,7 +241,7 @@ void Test()
           TILE_SIZE, g_timing_iterations, g_grid_size, BLOCK_THREADS, ITEMS_PER_THREAD, max_sm_occupancy);
  } else {
    printf("BlockReduce algorithm %s on %d items (%d timing iterations, %d blocks, %d threads, %d items per thread, %d SM occupancy):\n",
-          (TEST_ALGORITHM == SIMPLE) ? "BLOCK_REDUCE_SIMPLE" : "BLOCK_REDUCE_NONE",
+          (TEST_ALGORITHM == SIMPLE) ? "BLOCK_REDUCE_SIMPLE" : "BLOCK_REDUCE_MIN_DIVERGENCE",
           TILE_SIZE, g_timing_iterations, g_grid_size, BLOCK_THREADS, ITEMS_PER_THREAD, max_sm_occupancy);
  }
  // Run kernel
@@ -225,7 +250,7 @@ void Test()
    BlockReduceKernel<BLOCK_THREADS, ITEMS_PER_THREAD, ALGORITHM>
      <<<g_grid_size, BLOCK_THREADS>>>(d_in, d_out, d_elapsed);
  } else {
-   BlockReduceKernel<BLOCK_THREADS, ITEMS_PER_THREAD, SIMPLE>
+   BlockReduceKernel<BLOCK_THREADS, ITEMS_PER_THREAD, TEST_ALGORITHM>
      <<<g_grid_size, BLOCK_THREADS>>>(d_in, d_out, d_elapsed);
  }
 
@@ -254,7 +279,7 @@ void Test()
        d_out,
        d_elapsed);
    } else {
-     BlockReduceKernel<BLOCK_THREADS, ITEMS_PER_THREAD, SIMPLE><<<g_grid_size, BLOCK_THREADS>>>(
+     BlockReduceKernel<BLOCK_THREADS, ITEMS_PER_THREAD, TEST_ALGORITHM><<<g_grid_size, BLOCK_THREADS>>>(
        d_in,
        d_out,
        d_elapsed);
@@ -326,6 +351,7 @@ int main(int argc, char** argv)
 // Test<512, 2, BLOCK_REDUCE_RAKING, EMPTY>();
 
  Test<1024, 1, BLOCK_REDUCE_RAKING, SIMPLE>();
+ Test<1024, 1, BLOCK_REDUCE_RAKING, MIN_DIVERGENCE>();
 // Test<256, 4, BLOCK_REDUCE_RAKING>();
 // Test<128, 8, BLOCK_REDUCE_RAKING>();
 // Test<64, 16, BLOCK_REDUCE_RAKING>();
