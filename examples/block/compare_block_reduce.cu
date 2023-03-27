@@ -53,7 +53,8 @@ enum TestBlockReduceAlgorithm
   EMPTY,
   SIMPLE,
   MIN_DIVERGENCE,
-  SHARED_MEM
+  SHARED_MEM,
+  SHUFFLE
 };
 //---------------------------------------------------------------------
 // Globals, constants and typedefs
@@ -156,6 +157,35 @@ struct BlockReduceSharedMem {
   }
 };
 
+__device__ __forceinline__ int warpReduceSum(int val) {
+  for (int offset = warpSize/2; offset > 0; offset /= 2) {
+    val += __shfl_down_sync(0xffffffff, val, offset);
+  }
+  return val;
+}
+
+struct BlockReduceShuffle {
+  __device__ __forceinline__ int Sum(int *d_in) {
+    static __shared__ int shared[32];
+    int lane = threadIdx.x % warpSize;
+    int wid = threadIdx.x / warpSize;
+
+    int val = warpReduceSum(d_in[threadIdx.x]);
+
+    if (lane == 0) {
+      shared[wid] = val;
+    }
+    __syncthreads();
+
+    val = (threadIdx.x < blockDim.x / warpSize) ? shared[lane]:0;
+
+    if (wid == 0) {
+      val = warpReduceSum(val);
+    }
+    return val;
+  }
+};
+
 template <
   int                         BLOCK_THREADS,
   int                         ITEMS_PER_THREAD,
@@ -170,7 +200,9 @@ __global__ void BlockReduceKernel(
                                                               BlockReduceSimple,
                                   cub::detail::conditional_t< ALGORITHM == MIN_DIVERGENCE,
                                                               BlockReduceMinDivergence,
-                                                              BlockReduceSharedMem>>;
+                                  cub::detail::conditional_t< ALGORITHM == SHARED_MEM,
+                                                              BlockReduceSharedMem,
+                                                              BlockReduceShuffle>>>;
   // Start cycle timer
   clock_t start = clock();
 
@@ -264,7 +296,8 @@ void Test()
  } else {
    printf("BlockReduce algorithm %s on %d items (%d timing iterations, %d blocks, %d threads, %d items per thread, %d SM occupancy):\n",
           (TEST_ALGORITHM == SIMPLE) ? "BLOCK_REDUCE_SIMPLE" :
-          (TEST_ALGORITHM == MIN_DIVERGENCE) ? "BLOCK_REDUCE_MIN_DIVERGENCE": "BLOCK_REDUCE_SHARED_MEM",
+          (TEST_ALGORITHM == MIN_DIVERGENCE) ? "BLOCK_REDUCE_MIN_DIVERGENCE":
+          (TEST_ALGORITHM == SHARED_MEM) ? "BLOCK_REDUCE_SHARED_MEM": "BLOCK_REDUCE_SHUFFLE",
           TILE_SIZE, g_timing_iterations, g_grid_size, BLOCK_THREADS, ITEMS_PER_THREAD, max_sm_occupancy);
  }
  // Run kernel
@@ -376,6 +409,7 @@ int main(int argc, char** argv)
  Test<1024, 1, BLOCK_REDUCE_RAKING, SIMPLE>();
  Test<1024, 1, BLOCK_REDUCE_RAKING, MIN_DIVERGENCE>();
  Test<1024, 1, BLOCK_REDUCE_RAKING, SHARED_MEM>();
+ Test<1024, 1, BLOCK_REDUCE_RAKING, SHUFFLE>();
 
 // Test<256, 4, BLOCK_REDUCE_RAKING>();
 // Test<128, 8, BLOCK_REDUCE_RAKING>();
