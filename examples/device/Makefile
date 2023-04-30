@@ -25,6 +25,14 @@
 # * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 # *
 #******************************************************************************/
+#-------------------------------------------------------------------------------
+#
+# thrust dependency usage
+# cd cub/test
+# git clone --branch cuda-10.0 --depth=1 https://github.com/NVIDIA/thrust.git
+# add -I$(CUB_DIR)test/thrust to INC
+#
+#-------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------
 #
@@ -41,7 +49,7 @@ include ../../common.mk
 # Includes
 #-------------------------------------------------------------------------------
 
-INC += -I$(CUB_DIR) -I$(CUB_DIR)test 
+INC += -I$(CUB_DIR) -I$(CUB_DIR)test -I$(CUB_DIR)test/thrust
 
 
 
