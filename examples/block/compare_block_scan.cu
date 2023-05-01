@@ -74,6 +74,7 @@ enum TestBlockScanAlgorithm
   EMPTY,
   SEQUENCE,
   KOGGE_STONE,
+  DOUBLE_BUFFER
 };
 
 template <
@@ -116,6 +117,51 @@ struct BlockPrefixSumKoggeStone {
           tmp = input[threadIdx.x] + input[threadIdx.x - stride];
         }
         __syncthreads();
+        if (threadIdx.x >= stride) {
+          input[threadIdx.x] = tmp;
+        }
+      }
+
+      d_out[threadIdx.x + 1] = input[threadIdx.x];
+
+      if (threadIdx.x == 0) {
+        d_out[0] = 0;
+        aggregate = input[BLOCK_THREADS - 1];
+      }
+  }
+};
+
+template <
+    int                     BLOCK_THREADS,
+    int                     ITEMS_PER_THREAD>
+struct BlockPrefixSumDoubleBuffer {
+  __device__ __forceinline__ void ExclusiveSum(int *d_in,
+                                               int *d_out,
+                                               int &aggregate,
+                                               clock_t *d_elapsed) {
+
+      __shared__ int input[BLOCK_THREADS];
+      __shared__ int input2[BLOCK_THREADS];
+      input[threadIdx.x] = d_in[threadIdx.x];
+
+      for (unsigned int stride = 1; stride < BLOCK_THREADS; stride *= 2) {
+        __syncthreads();
+        int tmp;
+        if (threadIdx.x >= stride) {
+          tmp = input[threadIdx.x] + input[threadIdx.x - stride];
+        }
+        if (threadIdx.x >= stride) {
+          input2[threadIdx.x] = tmp;
+        }
+
+        stride *= 2;
+        if (stride > BLOCK_THREADS) {
+          break;
+        }
+
+        if (threadIdx.x >= stride) {
+          tmp = input2[threadIdx.x] + input2[threadIdx.x - stride];
+        }
         if (threadIdx.x >= stride) {
           input[threadIdx.x] = tmp;
         }
@@ -321,7 +367,7 @@ void Test()
                (TEST_ALGORITHM == SEQUENCE) ? "SEQUENCE"
                : (TEST_ALGORITHM == KOGGE_STONE)
                    ? "KOGGE_STONE"
-                   : "None",
+                   : "DOUBLE_BUFFER",
                TILE_SIZE, g_timing_iterations, g_grid_size, BLOCK_THREADS,
                ITEMS_PER_THREAD, max_sm_occupancy);
     }
@@ -436,6 +482,7 @@ int main(int argc, char** argv)
     // Run tests
     Test<1024, 1, BLOCK_SCAN_RAKING, SEQUENCE>();
     Test<1024, 1, BLOCK_SCAN_RAKING, KOGGE_STONE>();
+    Test<1024, 1, BLOCK_SCAN_RAKING, DOUBLE_BUFFER>();
 
 
     Test<1024, 1, BLOCK_SCAN_RAKING, EMPTY>();
