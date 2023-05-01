@@ -78,6 +78,7 @@ template <
 struct BlockPrefixSumSequence {
   __device__ __forceinline__ int ExclusiveSum(int *d_in,
                                               int *d_out,
+                                              int &aggregate,
                                               clock_t *d_elapsed) {
     if (threadIdx.x == 0) {
       d_out[0] = 0;
@@ -85,7 +86,7 @@ struct BlockPrefixSumSequence {
       for (int i = 2; i < BLOCK_THREADS * ITEMS_PER_THREAD; i++) {
         d_out[i] = d_out[i - 1] + d_in[i - 1];
       }
-      d_out[BLOCK_THREADS * ITEMS_PER_THREAD] = \
+      aggregate = \
           d_out[BLOCK_THREADS * ITEMS_PER_THREAD - 1] \
           + d_in[BLOCK_THREADS * ITEMS_PER_THREAD - 1];
     }
@@ -101,6 +102,23 @@ __global__ void BlockPrefixSumKernel(
     int         *d_out,         // Tile of output
     clock_t     *d_elapsed)     // Elapsed cycle count of block scan
 {
+  using InternalTestBlockReduce = BlockPrefixSumSequence<BLOCK_THREADS, ITEMS_PER_THREAD>;
+
+  // Start cycle timer
+  clock_t start = clock();
+  int aggregate;
+  // Compute exclusive prefix sum
+  InternalTestBlockReduce().ExclusiveSum(d_in, d_out, aggregate, d_elapsed);
+
+  // Stop cycle timer
+  clock_t stop = clock();
+
+  // Store aggregate and elapsed clocks
+  if (threadIdx.x == 0)
+  {
+    *d_elapsed = (start > stop) ? start - stop : stop - start;
+    d_out[BLOCK_THREADS * ITEMS_PER_THREAD] = aggregate;
+  }
 }
 
 //---------------------------------------------------------------------
@@ -204,7 +222,8 @@ int Initialize(
 template <
     int                 BLOCK_THREADS,
     int                 ITEMS_PER_THREAD,
-    BlockScanAlgorithm  ALGORITHM>
+    BlockScanAlgorithm  ALGORITHM,
+    TestBlockScanAlgorithm TEST_ALGORITHM>
 void Test()
 {
     const int TILE_SIZE = BLOCK_THREADS * ITEMS_PER_THREAD;
@@ -236,20 +255,51 @@ void Test()
 
     // Kernel props
     int max_sm_occupancy;
-    CubDebugExit(MaxSmOccupancy(max_sm_occupancy, BlockPrefixSumKernel<BLOCK_THREADS, ITEMS_PER_THREAD, ALGORITHM>, BLOCK_THREADS));
+    if (TEST_ALGORITHM == EMPTY) {
+        CubDebugExit(MaxSmOccupancy(
+            max_sm_occupancy,
+            BlockPrefixSumKernel<BLOCK_THREADS, ITEMS_PER_THREAD, ALGORITHM>,
+            BLOCK_THREADS));
+    } else {
+        CubDebugExit(MaxSmOccupancy(
+            max_sm_occupancy,
+            BlockPrefixSumKernel<BLOCK_THREADS, ITEMS_PER_THREAD, TEST_ALGORITHM>,
+            BLOCK_THREADS));
+    }
 
     // Copy problem to device
     cudaMemcpy(d_in, h_in, sizeof(int) * TILE_SIZE, cudaMemcpyHostToDevice);
 
-    printf("BlockScan algorithm %s on %d items (%d timing iterations, %d blocks, %d threads, %d items per thread, %d SM occupancy):\n",
-        (ALGORITHM == BLOCK_SCAN_RAKING) ? "BLOCK_SCAN_RAKING" : (ALGORITHM == BLOCK_SCAN_RAKING_MEMOIZE) ? "BLOCK_SCAN_RAKING_MEMOIZE" : "BLOCK_SCAN_WARP_SCANS",
-        TILE_SIZE, g_timing_iterations, g_grid_size, BLOCK_THREADS, ITEMS_PER_THREAD, max_sm_occupancy);
-
+    if (TEST_ALGORITHM == EMPTY) {
+        printf("BlockScan algorithm %s on %d items (%d timing iterations, %d blocks, %d threads, %d items per thread, %d SM occupancy):\n",
+               (ALGORITHM == BLOCK_SCAN_RAKING) ? "BLOCK_SCAN_RAKING"
+               : (ALGORITHM == BLOCK_SCAN_RAKING_MEMOIZE)
+                   ? "BLOCK_SCAN_RAKING_MEMOIZE"
+                   : "BLOCK_SCAN_WARP_SCANS",
+               TILE_SIZE, g_timing_iterations, g_grid_size, BLOCK_THREADS,
+               ITEMS_PER_THREAD, max_sm_occupancy);
+    } else {
+        printf("BlockScan algorithm %s on %d items (%d timing iterations, %d blocks, %d threads, %d items per thread, %d SM occupancy):\n",
+               (TEST_ALGORITHM == SEQUENCE) ? "SEQUENCE"
+               : (TEST_ALGORITHM == SEQUENCE)
+                   ? "None"
+                   : "None",
+               TILE_SIZE, g_timing_iterations, g_grid_size, BLOCK_THREADS,
+               ITEMS_PER_THREAD, max_sm_occupancy);
+    }
     // Run aggregate/prefix kernel
-    BlockPrefixSumKernel<BLOCK_THREADS, ITEMS_PER_THREAD, ALGORITHM><<<g_grid_size, BLOCK_THREADS>>>(
-        d_in,
-        d_out,
-        d_elapsed);
+    if (TEST_ALGORITHM == EMPTY) {
+        BlockPrefixSumKernel<BLOCK_THREADS, ITEMS_PER_THREAD, ALGORITHM><<<g_grid_size, BLOCK_THREADS>>>(
+            d_in,
+            d_out,
+            d_elapsed);
+    } else {
+        BlockPrefixSumKernel<BLOCK_THREADS, ITEMS_PER_THREAD, TEST_ALGORITHM><<<g_grid_size, BLOCK_THREADS>>>(
+            d_in,
+            d_out,
+            d_elapsed);
+    }
+
 
     // Check results
     printf("\tOutput items: ");
@@ -276,10 +326,13 @@ void Test()
         timer.Start();
 
         // Run aggregate/prefix kernel
-        BlockPrefixSumKernel<BLOCK_THREADS, ITEMS_PER_THREAD, ALGORITHM><<<g_grid_size, BLOCK_THREADS>>>(
-            d_in,
-            d_out,
-            d_elapsed);
+        if (TEST_ALGORITHM == EMPTY) {
+            BlockPrefixSumKernel<BLOCK_THREADS, ITEMS_PER_THREAD, ALGORITHM>
+                <<<g_grid_size, BLOCK_THREADS>>>(d_in, d_out, d_elapsed);
+        } else {
+            BlockPrefixSumKernel<BLOCK_THREADS, ITEMS_PER_THREAD, TEST_ALGORITHM>
+                <<<g_grid_size, BLOCK_THREADS>>>(d_in, d_out, d_elapsed);
+        }
 
         timer.Stop();
         elapsed_millis += timer.ElapsedMillis();
@@ -343,30 +396,33 @@ int main(int argc, char** argv)
     CubDebugExit(args.DeviceInit());
 
     // Run tests
-    Test<1024, 1, BLOCK_SCAN_RAKING>();
-    Test<512, 2, BLOCK_SCAN_RAKING>();
-    Test<256, 4, BLOCK_SCAN_RAKING>();
-    Test<128, 8, BLOCK_SCAN_RAKING>();
-    Test<64, 16, BLOCK_SCAN_RAKING>();
-    Test<32, 32, BLOCK_SCAN_RAKING>();
+    Test<1024, 1, BLOCK_SCAN_RAKING, SEQUENCE>();
 
-    printf("-------------\n");
 
-    Test<1024, 1, BLOCK_SCAN_RAKING_MEMOIZE>();
-    Test<512, 2, BLOCK_SCAN_RAKING_MEMOIZE>();
-    Test<256, 4, BLOCK_SCAN_RAKING_MEMOIZE>();
-    Test<128, 8, BLOCK_SCAN_RAKING_MEMOIZE>();
-    Test<64, 16, BLOCK_SCAN_RAKING_MEMOIZE>();
-    Test<32, 32, BLOCK_SCAN_RAKING_MEMOIZE>();
-
-    printf("-------------\n");
-
-    Test<1024, 1, BLOCK_SCAN_WARP_SCANS>();
-    Test<512, 2, BLOCK_SCAN_WARP_SCANS>();
-    Test<256, 4, BLOCK_SCAN_WARP_SCANS>();
-    Test<128, 8, BLOCK_SCAN_WARP_SCANS>();
-    Test<64, 16, BLOCK_SCAN_WARP_SCANS>();
-    Test<32, 32, BLOCK_SCAN_WARP_SCANS>();
+    Test<1024, 1, BLOCK_SCAN_RAKING, EMPTY>();
+//    Test<512, 2, BLOCK_SCAN_RAKING>();
+//    Test<256, 4, BLOCK_SCAN_RAKING>();
+//    Test<128, 8, BLOCK_SCAN_RAKING>();
+//    Test<64, 16, BLOCK_SCAN_RAKING>();
+//    Test<32, 32, BLOCK_SCAN_RAKING>();
+//
+//    printf("-------------\n");
+//
+//    Test<1024, 1, BLOCK_SCAN_RAKING_MEMOIZE>();
+//    Test<512, 2, BLOCK_SCAN_RAKING_MEMOIZE>();
+//    Test<256, 4, BLOCK_SCAN_RAKING_MEMOIZE>();
+//    Test<128, 8, BLOCK_SCAN_RAKING_MEMOIZE>();
+//    Test<64, 16, BLOCK_SCAN_RAKING_MEMOIZE>();
+//    Test<32, 32, BLOCK_SCAN_RAKING_MEMOIZE>();
+//
+//    printf("-------------\n");
+//
+//    Test<1024, 1, BLOCK_SCAN_WARP_SCANS>();
+//    Test<512, 2, BLOCK_SCAN_WARP_SCANS>();
+//    Test<256, 4, BLOCK_SCAN_WARP_SCANS>();
+//    Test<128, 8, BLOCK_SCAN_WARP_SCANS>();
+//    Test<64, 16, BLOCK_SCAN_WARP_SCANS>();
+//    Test<32, 32, BLOCK_SCAN_WARP_SCANS>();
 
 
     return 0;
