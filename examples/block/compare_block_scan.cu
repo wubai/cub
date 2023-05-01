@@ -63,20 +63,24 @@ int g_timing_iterations = 100;
 /// Default grid size
 int g_grid_size = 1;
 
+template <bool Test, class T1, class T2>
+using conditional_t = typename std::conditional<Test, T1, T2>::type;
+
 //---------------------------------------------------------------------
 // my test Kernels
 //---------------------------------------------------------------------
 enum TestBlockScanAlgorithm
 {
   EMPTY,
-  SEQUENCE
+  SEQUENCE,
+  KOGGE_STONE,
 };
 
 template <
     int                     BLOCK_THREADS,
     int                     ITEMS_PER_THREAD>
 struct BlockPrefixSumSequence {
-  __device__ __forceinline__ int ExclusiveSum(int *d_in,
+  __device__ __forceinline__ void ExclusiveSum(int *d_in,
                                               int *d_out,
                                               int &aggregate,
                                               clock_t *d_elapsed) {
@@ -95,6 +99,39 @@ struct BlockPrefixSumSequence {
 
 template <
     int                     BLOCK_THREADS,
+    int                     ITEMS_PER_THREAD>
+struct BlockPrefixSumKoggeStone {
+  __device__ __forceinline__ void ExclusiveSum(int *d_in,
+                                              int *d_out,
+                                              int &aggregate,
+                                              clock_t *d_elapsed) {
+
+      __shared__ int input[BLOCK_THREADS];
+      input[threadIdx.x] = d_in[threadIdx.x];
+
+      for (unsigned int stride = 1; stride < BLOCK_THREADS; stride *= 2) {
+        __syncthreads();
+        int tmp;
+        if (threadIdx.x >= stride) {
+          tmp = input[threadIdx.x] + input[threadIdx.x - stride];
+        }
+        __syncthreads();
+        if (threadIdx.x >= stride) {
+          input[threadIdx.x] = tmp;
+        }
+      }
+
+      d_out[threadIdx.x + 1] = input[threadIdx.x];
+
+      if (threadIdx.x == 0) {
+        d_out[0] = 0;
+        aggregate = input[BLOCK_THREADS - 1];
+      }
+  }
+};
+
+template <
+    int                     BLOCK_THREADS,
     int                     ITEMS_PER_THREAD,
     TestBlockScanAlgorithm      ALGORITHM>
 __global__ void BlockPrefixSumKernel(
@@ -102,7 +139,8 @@ __global__ void BlockPrefixSumKernel(
     int         *d_out,         // Tile of output
     clock_t     *d_elapsed)     // Elapsed cycle count of block scan
 {
-  using InternalTestBlockReduce = BlockPrefixSumSequence<BLOCK_THREADS, ITEMS_PER_THREAD>;
+  using InternalTestBlockReduce = conditional_t<ALGORITHM == SEQUENCE, BlockPrefixSumSequence<BLOCK_THREADS, ITEMS_PER_THREAD>,
+                                  BlockPrefixSumKoggeStone<BLOCK_THREADS, ITEMS_PER_THREAD>>;
 
   // Start cycle timer
   clock_t start = clock();
@@ -281,8 +319,8 @@ void Test()
     } else {
         printf("BlockScan algorithm %s on %d items (%d timing iterations, %d blocks, %d threads, %d items per thread, %d SM occupancy):\n",
                (TEST_ALGORITHM == SEQUENCE) ? "SEQUENCE"
-               : (TEST_ALGORITHM == SEQUENCE)
-                   ? "None"
+               : (TEST_ALGORITHM == KOGGE_STONE)
+                   ? "KOGGE_STONE"
                    : "None",
                TILE_SIZE, g_timing_iterations, g_grid_size, BLOCK_THREADS,
                ITEMS_PER_THREAD, max_sm_occupancy);
@@ -397,6 +435,7 @@ int main(int argc, char** argv)
 
     // Run tests
     Test<1024, 1, BLOCK_SCAN_RAKING, SEQUENCE>();
+    Test<1024, 1, BLOCK_SCAN_RAKING, KOGGE_STONE>();
 
 
     Test<1024, 1, BLOCK_SCAN_RAKING, EMPTY>();
