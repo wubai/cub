@@ -71,15 +71,6 @@ struct WarpScanShfl
         SHFL_C = ((0xFFFFFFFFU << STEPS) & 31) << 8,
     };
 
-    template <typename S>
-    struct IntegerTraits
-    {
-        enum {
-            ///Whether the data type is a small (32b or less) integer for which we can use a single SFHL instruction per exchange
-            IS_SMALL_UNSIGNED = (Traits<S>::CATEGORY == UNSIGNED_INTEGER) && (sizeof(S) <= sizeof(unsigned int))
-        };
-    };
-
     /// Shared memory storage layout type
     struct TempStorage {};
 
@@ -402,32 +393,6 @@ struct WarpScanShfl
         return output;
     }
 
-
-    /// Inclusive prefix scan step (specialized for small integers size 32b or less)
-    template <typename _T, typename ScanOpT>
-    __device__ __forceinline__ _T InclusiveScanStep(
-        _T              input,              ///< [in] Calling thread's input item.
-        ScanOpT          scan_op,            ///< [in] Binary scan operator
-        int             first_lane,         ///< [in] Index of first lane in segment
-        int             offset,             ///< [in] Up-offset to pull from
-        Int2Type<true>  /*is_small_unsigned*/)  ///< [in] Marker type indicating whether T is a small integer
-    {
-        return InclusiveScanStep(input, scan_op, first_lane, offset);
-    }
-
-
-    /// Inclusive prefix scan step (specialized for types other than small integers size 32b or less)
-    template <typename _T, typename ScanOpT>
-    __device__ __forceinline__ _T InclusiveScanStep(
-        _T              input,              ///< [in] Calling thread's input item.
-        ScanOpT          scan_op,            ///< [in] Binary scan operator
-        int             first_lane,         ///< [in] Index of first lane in segment
-        int             offset,             ///< [in] Up-offset to pull from
-        Int2Type<false> /*is_small_unsigned*/)  ///< [in] Marker type indicating whether T is a small integer
-    {
-        return InclusiveScanStep(input, scan_op, first_lane, offset);
-    }
-
     //---------------------------------------------------------------------
     // Templated inclusive scan iteration
     //---------------------------------------------------------------------
@@ -439,7 +404,7 @@ struct WarpScanShfl
         int             first_lane,         ///< [in] Index of first lane in segment
         Int2Type<STEP>  /*step*/)               ///< [in] Marker type indicating scan step
     {
-        input = InclusiveScanStep(input, scan_op, first_lane, 1 << STEP, Int2Type<IntegerTraits<T>::IS_SMALL_UNSIGNED>());
+        input = InclusiveScanStep(input, scan_op, first_lane, 1 << STEP);
 
         InclusiveScanStep(input, scan_op, first_lane, Int2Type<STEP + 1>());
     }
@@ -497,8 +462,7 @@ struct WarpScanShfl
                 inclusive_output,
                 scan_op,
                 segment_first_lane,
-                (1 << STEP),
-                Int2Type<IntegerTraits<T>::IS_SMALL_UNSIGNED>());
+                (1 << STEP));
         }
 
     }
@@ -533,8 +497,7 @@ struct WarpScanShfl
                 inclusive_output.value,
                 scan_op.op,
                 segment_first_lane,
-                (1 << STEP),
-                Int2Type<IntegerTraits<T>::IS_SMALL_UNSIGNED>());
+                (1 << STEP));
         }
     }
 
