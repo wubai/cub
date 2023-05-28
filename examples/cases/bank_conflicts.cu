@@ -44,6 +44,8 @@ int main(int argc, char** argv)
   Test<4>();
   Test<8>();
   Test<16>();
+  Test<17>();
   Test<32>();
+  Test<33>();
   cudaDeviceReset();
 }
